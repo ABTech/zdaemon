@@ -1,0 +1,118 @@
+# Copyright (c) 2024, AB Tech
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# Timeout for specials in seconds. Applies to Slack only. Triggers marked with
+# "enforce_special_timeout: True" will not fire if any special has fired
+# previously within this timeout.
+trigger_timeout_s: 60
+
+
+triggers:
+  # Trigger keys:
+  #   test: A string containing a Jinja template that will be assumed to match
+  #         if it evaluates to "True". All other results will fail to match.
+  #   legacy_instance: Instance to reply to (applies to Zulip only). Replies
+  #                    will always be in-thread on Slack.
+  #   response: A dictionary containing keys denoting probability as integers
+  #             summing to no more than 100. The trigger will pick a random int
+  #             from 0 to 99. A key of 10 will fire 10% of the time. A key of
+  #             "default" may be used as convenience when too lazy to calculate
+  #             the remaining values. The "default" key is optional--you can
+  #             set a trigger to only respond at all some percentage of the
+  #             time. Values in this dictionary are strings which may contain
+  #             Jinja templates.
+  #   enforce_special_timeout: Optional (default False). If another trigger
+  #                            with "enforce_special_timeout: True" has fired
+  #                            within the last "trigger_timeout_s" seconds (see
+  #                            above), then the trigger will be ignored. Applies
+  #                            to Slack only.
+  #   send_cubes_count: Optional (default 0). Number of cubes to send after
+  #                     sending a response. On zulip, they will be sent to
+  #                     zdaemon, cube. On slack, they will be be placed within
+  #                     the thread.
+  # Available Jinja variables:
+  #   instance: Name of the instance on Zulip or simply "slack"
+  #   channel: Channel ID on Slack or None on Zulip
+  #   sender: Message sender's username (should be used for matching and
+  #           plusplus)
+  #   display_sender: Username as an @ lookup on Slack or normal on Zulip (this
+  #                   should be used in responses)
+  #   message: Message content
+  # Available non-standard Jinja filters:
+  #   value | regex_match(find="", ignorecase=False)
+  #   value | regex_search(find="", ignorecase=False)
+
+  - test: >-
+      {{ sender | regex_match('(some_user|another_user)', ignorecase=True) and
+         message | regex_search('said something', ignorecase=True) }}
+    legacy_instance: said.something
+    response:
+      default: THEY SAID SOMETHING!
+  - test: >-
+      {{ message | regex_search('something special', ignorecase=True) }}
+    enforce_special_timeout: True
+    legacy_instance: something.special
+    response:
+      default: |
+        This is a special response of some sort.
+        It won't happen again until trigger_timeout_s runs out.
+  - test: >-
+      {{ message | regex_search('something really special', ignorecase=True) }}
+    enforce_special_timeout: True
+    legacy_instance: something.special
+    response:
+      10: |
+        This really special response happens 10% of the time, otherwise there is no response
+  - test: >-
+      {{ message | regex_search('chance', ignorecase=True) }}
+    enforce_special_timeout: True
+    legacy_instance: chance
+    response:
+      30: |
+        This happens 30% of the time
+      20: |
+        This happens 20% of the time
+      default: |
+        This happens the remaining 50% of the time
+  - test: >-
+      {{ message | regex_search('ping', ignorecase=True) }}
+    enforce_special_timeout: True
+    legacy_instance: "{{ instance }}"
+    response:
+      default: |
+        Pong {{ display_sender }}!
+  - test: >-
+      {{ instance == 'slack' and
+         message | regex_search('I want cubes') }}
+    enforce_special_timeout: True
+    legacy_instance: "{{ instance }}"
+    response:
+      default: |
+        This special sends two cubes but only on Slack
+        ...or on a Zulip instance called "slack"
+    send_cubes_count: 2

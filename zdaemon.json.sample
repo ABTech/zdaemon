@@ -1,0 +1,12 @@
+{
+    "ZDAEMON_ROOT": "/home/zdaemon",
+    "ABTECH_CLASS": "abtech",
+    "ZDAEMON_CLASS": "zdaemon",
+    "GHOSTS_CLASS": "ghosts",
+    "MY_ID": "cube-bot@andrew.cmu.edu",
+    "MAINTAINER": "zdaemon@abtech.org",
+    "SLACK_APP_TOKEN": "",
+    "SLACK_BOT_TOKEN": "",
+    "SLACK_CUBE_CHANNEL_ID": ""
+    "SLACK_CHANNEL_WHITELIST": []
+}

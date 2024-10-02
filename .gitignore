@@ -1,0 +1,15 @@
+# Don't keep the local default config file name
+# (rely on using .json.sample in the repo)
+zdaemon.json
+
+# Python virtual environment names & other cruft
+env/*
+venv/*
+__pycache__
+
+# Some log files we don't need to keep
+log
+
+# Don't keep any data files
+data/*
+www/*

@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+# Copyright (c) 2024, AB Tech
+# Copyright (c) 2012 Zulip, Inc.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# System
+import argparse
+import functools
+from subprocess import Popen, PIPE, STDOUT
+import socket
+import traceback
+
+# Zulip
+import zulip
+
+# Slack
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_bolt.error import BoltUnhandledRequestError
+from slack_bolt.response import BoltResponse
+
+# Zdaemon
+import config as cfg
+import common as zd
+from zdaemon import zdaemon_router, zdaemon_slack_router
+from triggers import ZdaemonMessageMatchTriggers
+
+usage = """zudaemon --zconfig-file=<zdaemon config> [options]
+
+Zdaemon listener for Zulip and/or Slack.
+"""
+parser = argparse.ArgumentParser(usage=usage)
+cfg.add_zdaemon_arguments(parser)
+
+group = parser.add_argument_group("zudaemon control options")
+group.add_argument("--triggers-file", dest="triggers_file",
+                    help="Location of the yaml triggers file.",
+                    default="./triggers.yaml")
+
+options = parser.parse_args()
+
+cfg.init_zdaemon_config(options)
+
+triggers = ZdaemonMessageMatchTriggers(trigger_config_path=options.triggers_file)
+
+# OK, we're ready to start.  Display our config.
+print ("Zudaemon Listener Started for: %s" % ("Slack" if cfg.SLACK_ENABLE else "Zulip"))
+cfg.print_config()
+
+
+def get_exception_message(e):
+	traceback_text = ''.join(traceback.format_exception(e))
+	return "**ZDAEMON Top Level Exception Caught: " + str(e) + "\n" + traceback_text
+
+
+def zdaemon_zulip_handler(message):
+	'''Runs a single message through the python zdaemon implementation.'''
+	try:
+		sender_email = message['sender_email']
+
+		# We only do anything if this is not a message we sent.
+		if sender_email != cfg.MY_ID:
+			if message['type'] == 'private':
+				# Assumes no actual stream called "private"
+				stream = 'private'
+			else:
+				stream = message['display_recipient']
+			sender_split = sender_email.split('@')
+			sender = zd.realID(sender_split[0])
+			instance = message['subject']
+			content = message['content']
+
+			# TODO Logging?
+			# print ('%s / %s / %s / %s' % (sender, instance, content, sender_split))
+
+			zdaemon_router(stream, instance, sender, sender_email, content, triggers)
+	except Exception as e:
+		msg = get_exception_message(e)
+		zd.sendToMaintainer(msg)
+		print(msg)
+
+
+def handle_slack_errors(error):
+	# If we start seeing unhandled events, we can mask them with code like the following.
+	# However, since we effectively process every message event and don't subscribe to others,
+	# unhandled events are probably an error for us.
+	#if isinstance(error, BoltUnhandledRequestError):
+    #    # Debug logging?  This will be spammy since every message will generate one.
+	#	return BoltResponse(status=200, body="")
+	#else:
+	msg = get_exception_message(error)
+	zd.sendToMaintainer(msg)
+	print(msg)
+
+	return BoltResponse(status=500, body="Something Went Wrong")
+
+
+# Final slack config.
+app = None
+if cfg.SLACK_ENABLE:
+	# Slack Implementation
+	# Ignores self events by default, but we will make double-sure anyway.
+	# Ironically raising an error for unhandled request allows us to reduce errors.
+	app = App(token = cfg.SLACK_BOT_TOKEN,
+		      ignoring_self_events_enabled=True,
+			  raise_error_for_unhandled_request=True)
+
+	# Register all the commands and other handlers
+	zdaemon_slack_router_triggers = functools.partial(zdaemon_slack_router, triggers)
+	app.event('message')(zdaemon_slack_router_triggers)
+	app.error(handle_slack_errors)
+
+
+# Ready to go!
+hello_string = "zdaemon started (%s)" % socket.gethostname()
+zd.sendToMaintainer(hello_string)
+
+# These are blocking calls, and will continuously poll for new messages
+if cfg.SLACK_ENABLE:
+	handler = SocketModeHandler(app, cfg.SLACK_APP_TOKEN)
+	handler.start()
+else:
+	zd.runzulip(zdaemon_zulip_handler)

@@ -1,0 +1,139 @@
+#!/usr/bin/perl
+# Convert the PP database (and Last PP database) from GDBM to sqllite
+#
+# Copyright (c) 2024, AB Tech
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+use Encode;
+use GDBM_File;
+use DBI;
+
+my $GDBM_PPDATA_DB = "data/ppdata.db";
+my $GDBM_LASTPP_DB = "data/lastpp.db";
+my $SQLITE_OUTPUT = "ppdata.sqlite";
+
+my $DSN = "DBI:SQLite:dbname=$SQLITE_OUTPUT";
+
+if (-e $SQLITE_OUTPUT) {
+    print "Target $SQLITE_OUTPUT already exists.\n";
+    print "Continuing is not safe, aborting.\n";
+    exit(1);
+}
+
+# Open Databases
+my %ppdata;
+my %lastpp;
+tie %ppdata, 'GDBM_File', $GDBM_PPDATA_DB, GDBM_READER, 0640 || die ("can't tie ppdata: $!");
+tie %lastpp, 'GDBM_File', $GDBM_LASTPP_DB, GDBM_READER, 0640 || die ("can't tie lastpp: $!");
+my $DBH = DBI->connect($DSN, "", "", { RaiseError => 1 }) || die ("can't open sqllite: $DBI::errstr");
+
+print "Ready\n";
+
+print "Creating Tables\n";
+
+$DBH->do("CREATE TABLE ppdata (thing TEXT PRIMARY KEY NOT NULL,
+                               score INTEGER NOT NULL);")
+    || die("cannot create ppdata table: $DBI::errstr");
+$DBH->do("CREATE TABLE lastpp (username TEXT NOT NULL,
+                               thing TEXT NOT NULL,
+                               direction INTEGER NOT NULL,
+                               timestamp INTEGER NOT NULL,
+                               PRIMARY KEY(username, thing, direction));")
+    || die("cannot create lastpp table: $DBI::errstr");
+
+
+print "Tables Created\n";
+
+print scalar(keys %ppdata) . " pp entries.\n";
+print scalar(keys %lastpp) . " lastpp entries.\n";
+print "--\n";
+
+my $PPD_INSERT = qq( INSERT INTO ppdata (thing, score) VALUES (:thing, :score); );
+foreach my $k (keys %ppdata) {
+    $testString = $k;
+    eval { decode( 'UTF-8', $testString, Encode::FB_CROAK ) };
+    if ($@) {
+        print "DECODE ERROR ON '$k' -- skipping\n";
+        next;
+    }
+    print "$k: $ppdata{$k}...";
+    my $h = $DBH->prepare($PPD_INSERT);
+    $h->bind_param(":thing", $k);
+    $h->bind_param(":score", $ppdata{$k});
+    $h->execute() || die ("could note execute statement: $DBI::errstr");
+    $h->finish();
+    print "ok\n";
+}
+print "--\n";
+
+my $LASTPP_INSERT = qq ( INSERT INTO lastpp
+                                     (username, thing, direction, timestamp)
+                                     VALUES (:username, :thing, :direction, :timestamp); );
+foreach my $key (keys %lastpp) {
+    $testString = $key;
+    eval { decode( 'UTF-8', $testString, Encode::FB_CROAK ) };
+    if ($@) {
+        print "DECODE ERROR ON (lastpp) '$key' -- skipping\n";
+        next;
+    }
+
+    # TODO: This might actually be skippable, since its only an hour
+    # window anyway.
+    #
+    # TODO: Need to be sure we don't have any usernames with a dot.
+    #
+    # Keys are username.thing.direction
+    # Thing can have dots.  Direction is only -1 or 1
+    if(! ($key =~ m/^([^\.]+)\.(.+)\.(-1|1)$/)) {
+        die "lastpp key '$key' doesn't match pattern.  Abort!";
+    } 
+    my $username = $1;
+    my $thing = $2;
+    my $direction = $3;
+
+    print "$key: [$username, $thing, $direction]: $lastpp{$key}...";
+
+    my $h = $DBH->prepare($LASTPP_INSERT);
+    $h->bind_param(":username", $username);
+    $h->bind_param(":thing", $thing);
+    $h->bind_param(":direction", $direction);
+    $h->bind_param(":timestamp", $lastpp{$key});
+    $h->execute() || die ("could note execute statement: $DBI::errstr");
+    $h->finish();
+
+    print "ok\n";
+}
+
+print "Done\n";
+
+# Close Databases Cleanly
+$DBH->disconnect();
+untie %ppdata;
+untie %lastpp;
+
+
