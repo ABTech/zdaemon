@@ -145,7 +145,8 @@ def init_zdaemon_config(options, load_channels=True, config_file_only=False):
                 raise Exception("SLACK_CHANNEL_WHITELIST is present but doesn't appear to be a list")
             slack_channel_whitelist = wl
         if "SLACK_BRIDGE_BOT_ID" in file_data:
-            SLACK_BRIDGE_BOT_ID = file_data["SLACK_BRIDGE_BOT_ID"]
+            # Make sure to force this to uppercase.
+            SLACK_BRIDGE_BOT_ID = file_data["SLACK_BRIDGE_BOT_ID"].upper()
 
 
         if "SENDCUBE_ENABLE" in file_data:
