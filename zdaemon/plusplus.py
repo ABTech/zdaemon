@@ -30,14 +30,16 @@ from datetime import datetime
 
 import functools
 import pytz
+from random import randrange
 import re
 import sqlite3
 import time
 import unicodedata as ud
 
 import config as cfg
-from common import realID, sendz, sendsText, get_slack_thread, get_slack_user_email, hasRTLCharacters
-from random import randrange
+from common import sendz
+from common import slack_active, sendsText, get_slack_thread, get_slack_user_email
+from common import realID, hasRTLCharacters
 
 # sqlite Schema
 #
@@ -207,27 +209,18 @@ def _plusplus(cursor, sender, display_sender,
     if inc != 1 and inc != -1:
         raise Exception("_plusplus: bad increment %s" % inc)
 
-    thing_id = realID(thing)
-    self_pp_penalty = False
-
-    # Detect someone plusplussing a slack entity, and forbid.
-    # Note that this code still runs on zulip, but it probably is an error there as well.
-    m = re.match(r'<([@#])([a-z0-9]+)(|.*)?>', thing_id)
-    if m:
-        type = m.group(1)
-        entity = m.group(2)
-
-        hint = ""
-        if type == '@':
-            hint = "  If this is a user, please use their andrew id."
-        elif type == '#':
-            hint = "  If this is a channel, consider omitting the hash mark."
-
-        reply("It looks like you might be trying to plusplus the slack entity: %s, "
-              "but this is not supported.%s" % (entity, hint))
-        return None
+    # Legacy zdaemon made this call, but realID() didn't actually have correct regexes, so
+    # it never worked!  The behavior is surprising when it is working, as plusplus will report
+    # the score of the canonical id, but display the name of the noncanonical ID.  e.g.
+    # "zdaemon@ABTECH.ORG: 1023482" while recording & reporting the score for "zdaemon"
+    #
+    # We think users plusplusing an email address, even an andrew or abtech one, expect that
+    # the string for the email itself is the thing that gets changed.
+    # thing_id = realID(thing)
+    thing_id = thing
 
     # Self Plusplus Penalty
+    self_pp_penalty = False
     if (thing_id == sender and inc == 1):
         reply("Whoa, @bold(loser) trying to plusplus themselves.\n" \
               "Changing to %s--" % thing_id)
@@ -305,6 +298,80 @@ def _plusplus(cursor, sender, display_sender,
     return ret
 
 
+def _ppSlackEntityFilter(thing_id, reply):
+    '''Attempts to resolve plusplus targets that are slack entities into better targets.
+
+        thing_id is the thing to examine
+        reply is used to send error messages if the thing is disallowed.
+
+        returns canonical name (might be the same) or None if this should be disallowed.
+    '''
+    # Detect someone plusplussing a slack entity, and forbid.
+    # Note that this code still runs on zulip, but it probably is an error there as well.
+    m = re.fullmatch(r'<([@#])([a-z0-9]+)(|.*)?>', thing_id)
+    if m:
+        thing_is_slack_entity = True
+        type = m.group(1)
+        entity = m.group(2)
+
+        hint = ""
+
+        if type == '@':
+            hint += "  If this is a user, please use their andrew id."
+        elif type == '#':
+            hint += "  If this is a channel, consider omitting the hash mark."
+
+        try:
+            if type == '@' and slack_active():
+                # Best effort attempt to convert this to an andrew id.
+                email = get_slack_user_email(entity, False)
+
+                # Only used if we fail to canonicalize.
+                hint += "  When I looked it up, I got %s which didn't look like an andrew account." % email
+
+                # Remember that everyone gets trapped with using regexes for email addresses.
+                # Luckily the ones we care about here are not plus addressed and don't use the
+                # full rfc*822 formatting, since we're specifally looking for the andrew ID.
+                if re.fullmatch(r'([\-\.\w]+)@([\.\w]+)', email):
+                    new_thing = realID(email)
+
+                    # Check if it still looks like an email address.
+                    if not re.fullmatch(r'([\-\.\w]+)@([\.\w]+)', new_thing):
+                        # It canonicalized successfully!
+                        thing_id = new_thing
+                        thing_is_slack_entity = False
+        except:
+            # If an exception happens, proceed almost as if it wasn't valid anyway.
+            hint += "  I tried to look it up, but I wasn't able to."
+            pass
+
+        # If we haven't turned this into something usable, abort!
+        if thing_is_slack_entity:
+            reply("It looks like you might be trying to plusplus the slack entity: %s, "
+                  "but this is not supported.%s" % (entity.upper(), hint))
+            return None
+
+    return thing_id
+
+
+def _ppSlackEmailFilter(thing):
+    '''
+        Slack always turns emails into markdown, we need to strip that out before using it for plusplus.
+    '''
+    if not slack_active():
+        return thing
+
+    # These look like "<mailto:zdaemon@abtech.org|zdaemon@abtech.org>"
+    #
+    # We're knowingly walking into the trap of generating a regex for an email address.
+    # It is an imperfect world.  Be nice.
+    m = re.fullmatch(r'<mailto:([\-\.\+\w]+@[\.\w]+)\|\1>', thing)
+    if m:
+        thing = m.group(1)
+
+    return thing
+
+
 def scanPlusPlus(sender, message, reply, display_sender=None):
     #log("In scanplusplus: %s" % message)
 
@@ -326,7 +393,6 @@ def scanPlusPlus(sender, message, reply, display_sender=None):
     cur = dbh.cursor()
     cur.execute("BEGIN")
     try:
-
         m = pattern.search(haystack)
         while m is not None:
             haystack = m.group(3)
@@ -334,6 +400,21 @@ def scanPlusPlus(sender, message, reply, display_sender=None):
             op = m.group(2)
 
             # print ("%s / %s" % (thing, op))
+
+            # Set up next loop.  Done before we decide if we need to slack-entity-filter
+            # this item for readability reasons.
+            #
+            # Don't reference m inside the loop after this point!
+            m = pattern.search(haystack)
+
+            # Forbid #channels and @users that we can't convert to an andrew account.
+            thing = _ppSlackEntityFilter(thing, reply)
+            if thing is None:
+                # Need to filter it!
+                continue
+
+            # Strip slack email address markdown.
+            thing = _ppSlackEmailFilter(thing)
 
             if (thing == "year"):
                 results['year'] = datetime.now(_PIT_TIMEZONE).year
@@ -364,8 +445,6 @@ def scanPlusPlus(sender, message, reply, display_sender=None):
 
                 if (res is not None):
                     results[thing] = res
-
-            m = pattern.search(haystack)
 
         cur.execute("COMMIT")
     except Exception as e:

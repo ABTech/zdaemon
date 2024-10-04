@@ -26,7 +26,7 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from cachetools import cached, TTLCache
+from cachetools import cached, LRUCache, TTLCache
 import logging
 import re
 import time
@@ -99,6 +99,13 @@ def sendz(zclass, instance, message, unfurl=False):
     else:
         _log.error("sendz zulip error: " + response["msg"])
         return False
+
+
+def slack_active():
+    '''
+        Returns true if there is a slack client available.
+    '''
+    return _SLACK_CLIENT is not None
 
 
 def _sendsErrorCheck(res, channel_id, thread_ts, message):
@@ -183,6 +190,21 @@ def slackReact(message, emojiname):
         _log.error("sendsBlock Slack Error: " + e.response["error"])
 
 
+# We use LRU cache here with size 1 to just cache the result forever, since our
+# userid really shouldn't change while we're running.
+@cached(cache=LRUCache(maxsize=1))
+def get_zdaemon_userid():
+    '''Returns our own userid'''
+    if _SLACK_CLIENT is None:
+        raise Exception("_SLACK_CLIENT not configured")
+
+    res = _SLACK_CLIENT.auth_test()
+    if not res['ok']:
+        raise Exception("OK:False when fetching bot id via auth_test (result: %s)" % res)
+
+    return res['user_id']
+
+
 # Cache bot userid lookups for a day (if we really need to change bot ids, just kick zdaemon)
 @cached(cache=TTLCache(maxsize=64, ttl=86400))
 def get_slack_bot_userid(botid):
@@ -211,11 +233,22 @@ def get_slack_user_profile(userid):
 def get_slack_user_email(userid, lhs_only=True):
     '''Returns the user's slack profile's email.  By default only returns the left hand side.
 
-       Hard-codes the slack bridge bot to be "bridge-bot@ABTECH.ORG"
+       Since slack doesn't let bot user profiles have a userid, this hard-codes the
+       slack bridge bot to be "bridge-bot@ABTECH.ORG", and itself as "zdaemon@ABTECH.ORG".
     '''
+    # Apparently, slack likes these to be uppercase.
+    userid = userid.upper()
+
+    # print("searching %s" % userid)
+
     if userid == cfg.SLACK_BRIDGE_BOT_ID:
         return "bridge-bot@ABTECH.ORG"
 
+    if userid == get_zdaemon_userid():
+        return "zdaemon@ABTECH.ORG"
+
+    # We don't need a TTLCache for this function, since this next call does all the
+    # expensive work and is, itself, cached.
     profile_result = get_slack_user_profile(userid)
 
     if 'email' not in profile_result:
@@ -361,19 +394,24 @@ def get_slack_thread(event):
 def realID(id):
     """Converts the passed identifier into a more canonical form.
        Mostly deals with the same user across many realms.
+
+       Specifically, we treat identically named ABTECH.ORG and ANDREW.CMU.EDU users as identical.
+
+       Note: We also are assuming that the email addresses match typical ANDREW.CMU.EDU naming
+       conventions (e.g. nothing other than alphanumerics on the LHS -- though we'll deal with
+       a few special characters as well like ., +, and -)
     """
     name = id.rstrip()
-    m = re.match(r'(\w+)@ABTECH.ORG', name)
+    m = re.fullmatch(r'([\.\+\-\w]+)@ABTECH\.ORG', name, re.IGNORECASE)
     if m:
         name = m.group(1)
     else:
-        m = re.match(r'(\w+)@ANDREW.CMU.EDU', name)
+        m = re.fullmatch(r'([\.\+\-\w]+)@ANDREW\.CMU\.EDU', name, re.IGNORECASE)
         if m:
             name = m.group(1)
 
-    # If we don't have a realm at this point,
-    # canonicalize to lowercase.
-    if not re.match(r'(\w+)@(\w+)', name):
+    # If we don't have a realm at this point, canonicalize to lowercase.
+    if not '@' in name:
         name = name.lower()
 
     return name

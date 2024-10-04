@@ -91,6 +91,10 @@ def ping_text(slack=False):
     msg += "*Plusplus*: %d (totaling %d)\n" % (ppstats['count'], ppstats['sum'])
     msg += "*Pronouns*: she/her\n"
     msg += "*Home Address*: %s\n" % socket.gethostname()
+
+    if slack:
+        msg += "*Slack User Id*: %s\n" % common.get_zdaemon_userid()
+
     msg += "*Server Uptime*: %s\n" % uptime.rstrip()
     msg += "*Last Restart*: %s\n" % strftime("%a, %d %b %Y %H:%M:%S +0000", gmtime(common.ZDAEMON_START_TIME))
 

@@ -141,8 +141,15 @@ if cfg.SLACK_ENABLE:
 hello_string = "zdaemon started (%s)" % socket.gethostname()
 zd.sendToMaintainer(hello_string)
 
-# These are blocking calls, and will continuously poll for new messages
+# handler.start() or zd.runzulip are blocking calls,
+# and will continuously poll for new messages until we die.
 if cfg.SLACK_ENABLE:
+	# This next line is not only informative, but also primes our cache!
+	#
+	# Note that it can throw an exception if the slack API is unhappy for some reason,
+	# but in that case it probably would have failed at the sendToMaintainer() above.
+	print ("I am Slack User ID: %s" % zd.get_zdaemon_userid())
+
 	handler = SocketModeHandler(app, cfg.SLACK_APP_TOKEN)
 	handler.start()
 else:
