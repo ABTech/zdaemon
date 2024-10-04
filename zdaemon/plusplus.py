@@ -348,7 +348,7 @@ def _ppSlackEntityFilter(thing_id, reply):
         # If we haven't turned this into something usable, abort!
         if thing_is_slack_entity:
             reply("It looks like you might be trying to plusplus the slack entity: %s, "
-                  "but this is not supported.%s" % (entity, hint))
+                  "but this is not supported.%s" % (entity.upper(), hint))
             return None
 
     return thing_id
