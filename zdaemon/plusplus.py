@@ -298,31 +298,46 @@ def _plusplus(cursor, sender, display_sender,
     return ret
 
 
-def _ppSlackEntityFilter(thing_id, reply):
+_SLACK_CHANNEL_PATTERN = re.compile(r'<#([a-z0-9]+)(|.*)?>')
+_SLACK_USER_PATTERN = re.compile(r'<@([a-z0-9]+)(|.*)?>')
+
+def _ppSlackEntityFilter(thing, reply):
     '''Attempts to resolve plusplus targets that are slack entities into better targets.
 
-        thing_id is the thing to examine
+        thing is the plusplus target to examine
         reply is used to send error messages if the thing is disallowed.
 
         returns canonical name (might be the same) or None if this should be disallowed.
     '''
-    # Detect someone plusplussing a slack entity, and forbid.
     # Note that this code still runs on zulip, but it probably is an error there as well.
-    m = re.fullmatch(r'<([@#])([a-z0-9]+)(|.*)?>', thing_id)
+
+    # First, we don't support channel entities at all.  So, if there's a channel entity
+    # anywhere within the thing, abort now.
+    m = _SLACK_CHANNEL_PATTERN.search(thing)
     if m:
-        thing_is_slack_entity = True
-        type = m.group(1)
-        entity = m.group(2)
+        entity = m.group(1)
+        reply("It looks like you are trying to plusplus something that contains the "
+              "slack channel %s but this is not supported.  "
+              "Consider omitting the hash mark." % entity.upper())
+        return None
 
-        hint = ""
+    # Detect someone plusplussing a slack user, and convert it to an andrew id or forbid.
+    # This tries to get embedded users, but it has limits, especially in unusual circumstances
+    # like, for example foo<@zdaemon|zdaemon>bar, where we'll replace the thing in the middle,
+    # but it probably is gibberish.  Then again, it is sort of gibberish anyway, so...
+    while True:
+        m = _SLACK_USER_PATTERN.search(thing)
+        if not m:
+            # Nothing left in the pattern that matches an embedded user.
+            break
 
-        if type == '@':
-            hint += "  If this is a user, please use their andrew id."
-        elif type == '#':
-            hint += "  If this is a channel, consider omitting the hash mark."
+        could_not_replace_slack_entity = True
+        entity = m.group(1)
+
+        hint = "  If this is a user, please use their andrew id."
 
         try:
-            if type == '@' and slack_active():
+            if slack_active():
                 # Best effort attempt to convert this to an andrew id.
                 email = get_slack_user_email(entity, False)
 
@@ -337,21 +352,25 @@ def _ppSlackEntityFilter(thing_id, reply):
 
                     # Check if it still looks like an email address.
                     if not re.fullmatch(r'([\-\.\w]+)@([\.\w]+)', new_thing):
-                        # It canonicalized successfully!
-                        thing_id = new_thing
-                        thing_is_slack_entity = False
+                        # It canonicalized successfully, do a replacement.
+                        # (Use the original match object to replace it)
+                        thing = thing[:m.start()] + new_thing + thing[m.end():]
+                        could_not_replace_slack_entity = False
         except:
             # If an exception happens, proceed almost as if it wasn't valid anyway.
             hint += "  I tried to look it up, but I wasn't able to."
             pass
 
         # If we haven't turned this into something usable, abort!
-        if thing_is_slack_entity:
-            reply("It looks like you might be trying to plusplus the slack entity: %s, "
-                  "but this is not supported.%s" % (entity.upper(), hint))
+        if could_not_replace_slack_entity:
+            what_string = "the slack entity"
+            if m.start() != 0:
+                what_string = "something containing the slack entity"
+            reply("It looks like you might be trying to plusplus %s: %s, "
+                  "but this is not supported.%s" % (what_string, entity.upper(), hint))
             return None
 
-    return thing_id
+    return thing
 
 
 def _ppSlackEmailFilter(thing):
@@ -372,6 +391,8 @@ def _ppSlackEmailFilter(thing):
     return thing
 
 
+_PLUSPLUS_THING_PATTERN = re.compile(r'([^\s]{2,})(\+\+|--|\~\~)[\!\:\;\?\.\,\)\]\}\s]+([\w\W]*)')
+
 def scanPlusPlus(sender, message, reply, display_sender=None):
     #log("In scanplusplus: %s" % message)
 
@@ -386,14 +407,11 @@ def scanPlusPlus(sender, message, reply, display_sender=None):
         # an op as the very end of the string.  So append a dot.
         haystack += "."
 
-    pattern = re.compile(r'([^\s]{2,})(\+\+|--|\~\~)[\!\:\;\?\.\,\)\]\}\s]+([\w\W]*)',
-                         flags=(re.I | re.S))
-
     dbh = _getDBHandle()
     cur = dbh.cursor()
     cur.execute("BEGIN")
     try:
-        m = pattern.search(haystack)
+        m = _PLUSPLUS_THING_PATTERN.search(haystack)
         while m is not None:
             haystack = m.group(3)
             thing = m.group(1).lower()
@@ -405,7 +423,7 @@ def scanPlusPlus(sender, message, reply, display_sender=None):
             # this item for readability reasons.
             #
             # Don't reference m inside the loop after this point!
-            m = pattern.search(haystack)
+            m = _PLUSPLUS_THING_PATTERN.search(haystack)
 
             # Forbid #channels and @users that we can't convert to an andrew account.
             thing = _ppSlackEntityFilter(thing, reply)
