@@ -27,7 +27,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # Need uptime, grep, cron to run, so we use the alpine version.
-FROM python:3.10-alpine
+FROM python:3.13-alpine
 
 RUN mkdir /home/zdaemon
 
