@@ -1025,10 +1025,10 @@ def cubeSlackRouter(message):
         # most recent cube thread.
         cubeInfo(text, sendResponse, slack_channel=message['channel'])
 
-    if (re.search(r"^!cubesucks($|\s)", text)):
+    if (re.search(r"^!cube\.?sucks($|\s)", text)):
         cubeSucksSlack(1, message, sendResponse)
 
-    if (re.search(r"^!cuberocks($|\s)", text)):
+    if (re.search(r"^!cube\.?rocks($|\s)", text)):
         cubeSucksSlack(-1, message, sendResponse)
 
     if (re.search(r"^!(slurpcube|cubeslurp)($|\s)", text)):
