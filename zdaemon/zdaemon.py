@@ -234,12 +234,23 @@ def zdaemon_slack_router(triggers, ack, say, message):
     # print ("zdaemon_slack_router event: %s[%s]/%s" %
     #       (message['type'], message['channel_type'],
     #        message['subtype'] if 'subtype' in message else 'None'))
+    # -- and/or --
+    # print(message)
 
-
-    bridge_bot_message = False
+    bot_message = False  # A message from any bot
+    bridge_bot_message = False  # A message specifically from the bridge bot
     if ('subtype' in message and
-        message['subtype'] == 'bot_message' and
+        message['subtype'] == 'bot_message' or
         'bot_id' in message):
+        # Classic bots use the 'bot_message' subtype, but modern apps do not.
+        # Regardless, all bots should include a bot_id.
+        #
+        # This check is therefore slightly more conservative than we need,
+        # but we really don't want to find ourselves handling bot messages
+        # unexpectedly.
+        bot_message = True
+
+    if (bot_message and 'bot_id' in message):
         # Need to look up the bot and add the user id to the message.
         userid = get_slack_bot_userid(message['bot_id'])
         message['user'] = userid
@@ -253,6 +264,9 @@ def zdaemon_slack_router(triggers, ack, say, message):
     # We only want to respond to real messages.  Most subtypes will be awkward for us to handle,
     # so only do true messages (no subtype) and replies for now.  (note: slack doesn't actually appear
     # to send the message_replied subtype as of Sep 2024)
+    #
+    # Note: You really want to do this first before any other check, since we might get a bot
+    # loop via the other sanity checks below.
     #
     # This gets rid of bot_message explicity (so we avoid loops with other bots), which is nice,
     # but also removes troublesome things like message_changed and message_deleted which would
@@ -270,14 +284,14 @@ def zdaemon_slack_router(triggers, ack, say, message):
     # channel.  These seem to be paried with a message_changed, which thankfully don't
     # seem to be relevant for our purposes.
     #
-    # Note: You really want to do this first before any other check, since we might get a bot
-    # loop via the other sanity checks below.
+    # Apologies for the complexity of this check.  It could almost certainly be better.
     if ('subtype' in message and
-        (message['subtype'] not in ['thread_broadcast',
-                                    'message_replied',
-                                    'file_share',
-                                    'bot_message'] or
-         (message['subtype'] == 'bot_message' and not bridge_bot_message))):
+           (message['subtype'] not in ['thread_broadcast',
+                                       'message_replied',
+                                       'file_share',
+                                       'bot_message'] or
+            (message['subtype'] == 'bot_message' and not bridge_bot_message)) or
+        bot_message and not bridge_bot_message):
         # DEBUG
         # print("zdaemon_slack_router ignoring message: %s" % message)
         return
