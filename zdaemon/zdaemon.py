@@ -31,6 +31,7 @@
 
 from time import time, gmtime, strftime
 import functools
+import random
 import re
 import socket
 import subprocess
@@ -220,6 +221,16 @@ def slack_rip(message):
     slackReact(message, "headstone")
 
 
+def slack_unhelp(message):
+    '''UNHELP only supported on slack, since slack lacks instances.
+
+       Undocumented command.
+
+       Adds an appropriate react, like !rip
+    '''
+    slackReact(message, random.choice(["upside_down_face","face_with_rolling_eyes"]))
+
+
 # Handles all message events from slack.
 #
 # It would be great if we could use say() to respond, but we can't, since we don't always
@@ -350,6 +361,8 @@ def zdaemon_slack_router(triggers, ack, say, message):
         slack_gny(message)
     if (re.search(r"^!rip($|\s)", text, flags=re.I)):
         slack_rip(message)
+    if (re.search(r"^!unhelp($|\s)", text, flags=re.I)):
+        slack_unhelp(message)
 
     triggers.slack_check_msg(message)
     cube.cubeSlackRouter(message)
