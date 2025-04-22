@@ -5,7 +5,7 @@ click==8.1.7
 cowsay==6.1
 distro==1.9.0
 idna==3.7
-Jinja2==3.1.5
+Jinja2==3.1.6
 MarkupSafe==2.1.5
 pytz==2023.4
 PyYAML==6.0.2
